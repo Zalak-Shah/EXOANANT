@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exoplanet Detection Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0e1a;
+    font-family: 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 30px 20px;
+  }
+
+  h1 {
+    color: #e0eaff;
+    font-size: 18px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .subtitle {
+    color: #5b7be0;
+    font-size: 12px;
+    letter-spacing: 1px;
+    margin-bottom: 36px;
+    text-align: center;
+  }
+
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+    max-width: 480px;
+  }
+
+  .node {
+    width: 100%;
+    border-radius: 12px;
+    padding: 16px 22px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    position: relative;
+  }
+
+  .node-icon {
+    font-size: 26px;
+    width: 44px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .node-content { flex: 1; }
+  .node-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 2px;
+  }
+  .node-sub {
+    font-size: 11px;
+    opacity: 0.75;
+    color: #cdd8ff;
+  }
+  .node-tag {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 20px;
+    flex-shrink: 0;
+    letter-spacing: 0.5px;
+  }
+
+  /* Colors per step */
+  .n1 { background: #131c3a; border: 1.5px solid #2a4080; }
+  .n1 .node-tag { background: #1a2e6b; color: #7da4ff; }
+
+  .n2 { background: #13251e; border: 1.5px solid #1f5c40; }
+  .n2 .node-tag { background: #1a4a30; color: #4ecca8; }
+
+  .n3 { background: #231530; border: 1.5px solid #5a2d8a; }
+  .n3 .node-tag { background: #3a1a60; color: #c084fc; }
+
+  .n4 { background: #1e1a10; border: 1.5px solid #6b4e10; }
+  .n4 .node-tag { background: #4a3210; color: #fbbf24; }
+
+  .n5 { background: #1a1020; border: 1.5px solid #6b2060; }
+  .n5 .node-tag { background: #4a1040; color: #f472b6; }
+
+  .n6 { background: #101a2a; border: 1.5px solid #1a4a6b; }
+  .n6 .node-tag { background: #0f3050; color: #38bdf8; }
+
+  .n7 { background: #0f1e18; border: 1.5px solid #1a5a3a; }
+  .n7 .node-tag { background: #0a3020; color: #34d399; }
+
+  /* Arrow */
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 2px 0;
+    gap: 0;
+  }
+  .arrow-line {
+    width: 2px;
+    height: 18px;
+    background: linear-gradient(to bottom, #3a5080, #5a70b0);
+  }
+  .arrow-head {
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #5a70b0;
+  }
+  .arrow-label {
+    font-size: 9px;
+    color: #4a6090;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+    text-transform: uppercase;
+  }
+
+  /* Output box */
+  .output-box {
+    margin-top: 24px;
+    width: 100%;
+    max-width: 480px;
+    background: #111a10;
+    border: 1.5px solid #2a5a20;
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .output-title {
+    color: #4ecca8;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .output-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .output-item {
+    background: #0a1408;
+    border-radius: 8px;
+    padding: 10px 12px;
+    border: 1px solid #1a3a14;
+  }
+  .output-item .label {
+    font-size: 10px;
+    color: #5a8a50;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+  .output-item .value {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .confidence {
+    grid-column: 1 / -1;
+    background: #0a1408;
+    border-radius: 8px;
+    padding: 10px 12px;
+    border: 1px solid #2a5a20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .conf-label { font-size: 11px; color: #5a8a50; }
+  .conf-bar-wrap {
+    flex: 1;
+    margin: 0 12px;
+    height: 6px;
+    background: #1a2a18;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .conf-bar {
+    height: 100%;
+    width: 97%;
+    background: linear-gradient(to right, #34d399, #4ecca8);
+    border-radius: 3px;
+  }
+  .conf-value { font-size: 14px; font-weight: 700; color: #4ecca8; }
+
+  .footer-note {
+    margin-top: 24px;
+    font-size: 10px;
+    color: #3a4a6a;
+    text-align: center;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Exoplanet Detection Pipeline</h1>
+
+<div class="pipeline">
+
+  <!-- Step 1 -->
+  <div class="node n1">
+    <div class="node-icon">🛰️</div>
+    <div class="node-content">
+      <div class="node-title">TESS Satellite Data</div>
+      <div class="node-sub">Raw photometric light curves · MAST Archive</div>
+    </div>
+    <div class="node-tag">INPUT</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">download</div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="node n2">
+    <div class="node-icon">🧹</div>
+    <div class="node-content">
+      <div class="node-title">Preprocessing</div>
+      <div class="node-sub">Lightkurve · Normalize · Remove stellar noise</div>
+    </div>
+    <div class="node-tag">STEP 1</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">clean data</div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="node n3">
+    <div class="node-icon">📦</div>
+    <div class="node-content">
+      <div class="node-title">BLS — Transit Detection</div>
+      <div class="node-sub">Astropy BLS · Finds period, depth, duration · SDE score</div>
+    </div>
+    <div class="node-tag">STEP 2</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">candidates</div>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="node n4">
+    <div class="node-icon">🧠</div>
+    <div class="node-content">
+      <div class="node-title">CNN — Classification</div>
+      <div class="node-sub">TensorFlow · Conv → ReLU → Pool → Dense · ~96% accuracy</div>
+    </div>
+    <div class="node-tag">STEP 3</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">scored signals</div>
+  </div>
+
+  <!-- Step 5 -->
+  <div class="node n5">
+    <div class="node-icon">🚫</div>
+    <div class="node-content">
+      <div class="node-title">XGBoost — False Positive Rejection</div>
+      <div class="node-sub">Scikit-learn · Removes eclipsing binaries & noise</div>
+    </div>
+    <div class="node-tag">STEP 4</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">verified candidates</div>
+  </div>
+
+  <!-- Step 6 -->
+  <div class="node n6">
+    <div class="node-icon">🪐</div>
+    <div class="node-content">
+      <div class="node-title">BATMAN — Parameter Estimation</div>
+      <div class="node-sub">Fits transit model · Period · Depth · Duration</div>
+    </div>
+    <div class="node-tag">STEP 5</div>
+  </div>
+
+  <div class="arrow">
+    <div class="arrow-line"></div>
+    <div class="arrow-head"></div>
+    <div class="arrow-label">results</div>
+  </div>
+
+  <!-- Step 7 -->
+  <div class="node n7">
+    <div class="node-icon">📊</div>
+    <div class="node-content">
+      <div class="node-title">Visualization</div>
+      <div class="node-sub">Matplotlib · Light curve plot · Transit overlay</div>
+    </div>
+    <div class="node-tag">OUTPUT</div>
+  </div>
+
+</div>
+
+<!-- Sample Output -->
+<div class="output-box">
+  <div class="output-title">📋 Sample Output — Transit Detected</div>
+  <div class="output-grid">
+    <div class="output-item">
+      <div class="label">Period</div>
+      <div class="value">4.2 days</div>
+    </div>
+    <div class="output-item">
+      <div class="label">Depth</div>
+      <div class="value">0.002</div>
+    </div>
+    <div class="output-item">
+      <div class="label">Duration</div>
+      <div class="value">2.4 hrs</div>
+    </div>
+    <div class="output-item">
+      <div class="label">Status</div>
+      <div class="value" style="color:#4ecca8">✅ Planet</div>
+    </div>
+    <div class="confidence">
+      <div class="conf-label">Confidence</div>
+      <div class="conf-bar-wrap"><div class="conf-bar"></div></div>
+      <div class="conf-value">97%</div>
+    </div>
+  </div>
+</div>
+
+
+</body>
+</html>
