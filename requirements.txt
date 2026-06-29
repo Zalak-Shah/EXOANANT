@@ -1,7 +1,7 @@
 streamlit>=1.28
 lightkurve>=2.4
-batman-package>=2.4
-numpy>=1.21
+batman-package==2.4.9
+numpy>=1.21,<2.0
 pandas>=1.3
 scipy>=1.7
 plotly>=5.0
@@ -9,3 +9,4 @@ astropy>=5.0
 scikit-learn>=1.0
 matplotlib>=3.5
 kaleido>=0.2.1
+setuptools>=65.0
