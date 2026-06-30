@@ -669,7 +669,7 @@ with tab_graph:
 with tab_db:
     st.markdown('<h2 style="margin-bottom:1.5rem">Detection Database</h2>',
                 unsafe_allow_html=True)
-    db_file = 'D:\\isro\\results_database.csv'
+    db_file = os.path.join(BASE_DIR, 'results_database.csv')
     if os.path.exists(db_file):
         db = pd.read_csv(db_file)
         planets  = len(db[db['SignalType']=='Planet Transit'])
