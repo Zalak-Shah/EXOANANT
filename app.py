@@ -23,19 +23,18 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
+CNN_LOADED = False
 try:
     import tensorflow as tf
     if os.path.exists(MODEL_PATH):
-        cnn_model  = tf.keras.models.load_model(MODEL_PATH)
+        cnn_model = tf.keras.models.load_model(MODEL_PATH)
         CNN_LOADED = True
         if os.path.exists(META_PATH):
             meta = pd.read_csv(META_PATH)
             import ast
             CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
-        print("CNN model loaded!")
 except Exception as e:
-    print(f"CNN not loaded: {e} — using rule-based fallback")
-
+    st.warning(f"CNN not loaded: {e} — using rule-based fallback")
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Exoplanet Detection",
