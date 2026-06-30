@@ -18,7 +18,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_PATH = os.path.join(BASE_DIR, "exoplanet_classifier.h5")
 META_PATH = os.path.join(BASE_DIR, "model_meta.csv")
-db_file = os.path.join(BASE_DIR, "results_database.csv")
 CNN_LOADED = False
 cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
@@ -332,7 +331,7 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
 
 
 def save_db(r):
-    db_file = 'D:\\isro\\results_database.csv'
+    db_file = os.path.join(BASE_DIR, 'results_database.csv')
     row = {
         'DateTime'     : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'StarID'       : r['star_label'],
