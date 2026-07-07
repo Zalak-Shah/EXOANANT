@@ -215,7 +215,6 @@ def classify_rules(depth, dur_hours, snr, period_days):
         score['Planet Transit'] += 30; reasons.append(f'Period {period_days:.4f}d normal')
     else:
         score['Starspot'] += 20; reasons.append(f'Period {period_days:.4f}d long → starspot')
-
     sig      = max(score, key=score.get)
     tot      = sum(score.values())
     conf     = round(score[sig]/tot*100, 1) if tot > 0 else 0
@@ -452,8 +451,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='#ffffff11', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
+                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -524,7 +523,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
+                      colorscale=[[0, 'rgba(255,140,0,1)'], [1, 'rgba(255,140,0,0)']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
