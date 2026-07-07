@@ -277,7 +277,55 @@ def fit_batman_model(flat_time, flat_flux, t0_val, period_val, depth_val):
 # ═════════════════════════════════════════════════════════════
 # FEATURE — Star Properties from NASA TIC Catalog
 # ═════════════════════════════════════════════════════════════
+def parse_tic_digits(star_id_raw):
+    """Strictly extract a numeric TIC ID from free-form user input.
+    Raises ValueError with a clear, user-facing reason if the input
+    can't be parsed into a TIC number at all."""
+    if star_id_raw is None or not str(star_id_raw).strip():
+        raise ValueError("Star ID is empty. Enter a TIC number, e.g. 'TIC 261136679'.")
+
+    cleaned = str(star_id_raw).strip().upper().replace('TIC', '').strip()
+    digits = ''.join(ch for ch in cleaned if ch.isdigit())
+
+    if not digits:
+        raise ValueError(
+            f"'{star_id_raw}' is not a valid TIC ID. It must contain only "
+            f"digits (optionally prefixed with 'TIC'), e.g. 'TIC 261136679'."
+        )
+    return int(digits)
+
+
+def verify_tic_exists(tic_int):
+    """Authoritative existence check against NASA's real TESS Input Catalog.
+    Raises ValueError (with a genuine reason) if the ID does not exist,
+    instead of silently falling back to fake/default data."""
+    if not ASTROQUERY_OK:
+        raise ValueError(
+            "Cannot verify this Star ID right now — the 'astroquery' package "
+            "(needed to check NASA's TIC catalog) is not available in this "
+            "environment. Add 'astroquery' to requirements.txt to enable "
+            "real ID verification."
+        )
+    try:
+        result = Catalogs.query_criteria(catalog="TIC", ID=tic_int)
+    except Exception as e:
+        raise ValueError(
+            f"Could not reach NASA's TIC catalog to verify TIC {tic_int} "
+            f"(network/service error: {e}). Please try again."
+        )
+    if len(result) == 0:
+        raise ValueError(
+            f"TIC {tic_int} does not exist in NASA's TESS Input Catalog. "
+            f"Double-check the ID at https://exofop.ipac.caltech.edu/tess/ "
+            f"or the MAST portal — no data will be fabricated for an "
+            f"unknown ID."
+        )
+    return result[0]
+
+
 def fetch_star_properties(star_id):
+    """Return physical star properties. Assumes the ID was already
+    verified with verify_tic_exists(); this just extracts fields."""
     defaults = {'radius_solar': 1.0, 'temp_k': 5778, 'mass_solar': 1.0,
                 'logg': 4.44, 'found': False}
     if not ASTROQUERY_OK:
@@ -451,8 +499,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
+                   gridcolor='#ffffff11', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -523,7 +571,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, 'rgba(255,140,0,1)'], [1, 'rgba(255,140,0,0)']],
+                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -716,16 +764,45 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         star_label = 'Uploaded CSV'
 
     else:
-        search = lk.search_lightcurve(star_id, mission="TESS")
+        # 1) Parse the ID strictly — no silent guessing.
+        tic_int = parse_tic_digits(star_id)
+
+        # 2) Verify it's a real, existing star in NASA's TIC catalog
+        #    BEFORE downloading anything. This is what stops the app from
+        #    quietly returning results for a made-up or mistyped ID.
+        tic_row = verify_tic_exists(tic_int)
+
+        # 3) Always search with the exact canonical form "TIC <id>".
+        #    Passing raw/ambiguous text (e.g. just digits with no prefix)
+        #    lets MAST's fuzzy name resolver match the WRONG object, which
+        #    is why some valid-looking IDs were returning wrong/fake data.
+        canonical_id = f"TIC {tic_int}"
+        search = lk.search_lightcurve(canonical_id, mission="TESS")
+
+        if len(search) == 0:
+            raise ValueError(
+                f"TIC {tic_int} exists in NASA's catalog, but no TESS light "
+                f"curve observations are available for it — it may not have "
+                f"been observed yet, or no processed sectors exist. Try a "
+                f"different TIC ID (e.g. TIC 261136679, a confirmed host)."
+            )
 
         if sector >= len(search):
             raise ValueError(
-                f"This star only has {len(search)} available sectors."
+                f"TIC {tic_int} has data, but only {len(search)} sector(s) "
+                f"available (valid range: 0–{len(search)-1}). Lower the "
+                f"'TESS Sector' slider and try again."
             )
 
         lc_col = search[sector].download()
+        if lc_col is None:
+            raise ValueError(
+                f"TIC {tic_int} sector {sector} was listed by MAST but the "
+                f"file failed to download. This is a transient MAST/network "
+                f"issue — try again in a moment or pick a different sector."
+            )
         lc = lc_col.normalize().remove_nans().remove_outliers(sigma=5)
-        star_label = star_id
+        star_label = canonical_id
 
         raw_std = float(np.std(lc.flux.value))
 
@@ -780,9 +857,17 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
     else:
         snr, rms = 0.0, 0.0
 
-    # Star properties — NASA TIC Catalog
+    # Star properties — NASA TIC Catalog (reuse the row we already fetched
+    # during verification above, so we never re-resolve a different star)
     if not use_csv:
-        star_props = fetch_star_properties(star_id)
+        row = tic_row
+        star_props = {
+            'radius_solar': float(row['rad']) if row['rad'] else 1.0,
+            'temp_k'      : float(row['Teff']) if row['Teff'] else 5778,
+            'mass_solar'  : float(row['mass']) if row['mass'] else 1.0,
+            'logg'        : float(row['logg']) if row['logg'] else 4.44,
+            'found'       : True,
+        }
     else:
         star_props = {'radius_solar': 1.0, 'temp_k': 5778, 'mass_solar': 1.0,
                        'logg': 4.44, 'found': False}
