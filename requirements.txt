@@ -10,3 +10,5 @@ astroquery
 anthropic
 tensorflow
 kaleido
+scikit-learn
+matplotlib
