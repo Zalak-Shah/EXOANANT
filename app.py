@@ -646,7 +646,7 @@ def ai_chatbot_response(user_question, planet_context, chat_history):
     """
     messages = chat_history + [{"role": "user", "content": user_question}]
     response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
+        model="claude-3-5-sonnet-20241022", max_tokens=1000,
         system=system_prompt, messages=messages
     )
     return response.content[0].text
