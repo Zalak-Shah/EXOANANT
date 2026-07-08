@@ -45,25 +45,16 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
-@st.cache_resource(show_spinner="Loading CNN model...")
-def _load_cnn_model():
-    """Load the CNN model + class names once per session, not on every rerun."""
+CNN_LOADED = False
+try:
     import tensorflow as tf
-    model = None
-    class_names = CLASS_NAMES
-    loaded = False
     if os.path.exists(MODEL_PATH):
-        model = tf.keras.models.load_model(MODEL_PATH)
-        loaded = True
+        cnn_model = tf.keras.models.load_model(MODEL_PATH)
+        CNN_LOADED = True
         if os.path.exists(META_PATH):
             meta = pd.read_csv(META_PATH)
             import ast
-            class_names = ast.literal_eval(meta['class_names'].iloc[0])
-    return model, loaded, class_names
-
-CNN_LOADED = False
-try:
-    cnn_model, CNN_LOADED, CLASS_NAMES = _load_cnn_model()
+            CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
 except Exception as e:
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
 # ── Page config ───────────────────────────────────────────────
@@ -274,13 +265,11 @@ def fit_batman_model(flat_time, flat_flux, t0_val, period_val, depth_val):
     ss_res = np.sum((fl - bf) ** 2)
     ss_tot = np.sum((fl - np.mean(fl)) ** 2)
     r2     = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-    r2     = max(-1.0, r2)  # clip runaway negative fits (worse-than-flat-line) to -1.0
 
     fit_params = {
         'rp': round(rp_fit, 5), 'a': round(a_fit, 3), 'inc': round(inc_fit, 3),
         'u1': round(u1_fit, 4), 'u2': round(u2_fit, 4),
         'r_squared': round(r2, 4), 'converged': result.success,
-        'fit_quality': 'poor' if r2 < 0 else ('weak' if r2 < 0.5 else 'good'),
     }
     return pm, bf, fit_params
 
@@ -288,7 +277,6 @@ def fit_batman_model(flat_time, flat_flux, t0_val, period_val, depth_val):
 # ═════════════════════════════════════════════════════════════
 # FEATURE — Star Properties from NASA TIC Catalog
 # ═════════════════════════════════════════════════════════════
-@st.cache_data(show_spinner="Querying TIC catalog...")
 def fetch_star_properties(star_id):
     defaults = {'radius_solar': 1.0, 'temp_k': 5778, 'mass_solar': 1.0,
                 'logg': 4.44, 'found': False}
@@ -443,17 +431,6 @@ def compute_next_transits(t0_bjd, period_days, n=5):
 def make_database_chart(db):
     color_map = {'Planet Transit': GREEN, 'Eclipsing Binary': YELLOW,
                  'Starspot': PINK, 'Noise': GRAY}
-
-    # Sanitize: coerce numerics, drop rows with NaN/inf/non-positive period
-    # (log-scale x-axis) so one malformed database row can't crash the chart.
-    db = db.copy()
-    for col in ('Period_days', 'Rp_Earth', 'SNR'):
-        if col in db.columns:
-            db[col] = pd.to_numeric(db[col], errors='coerce')
-    db = db.replace([np.inf, -np.inf], np.nan)
-    db = db.dropna(subset=['Period_days', 'Rp_Earth', 'SNR', 'SignalType'])
-    db = db[db['Period_days'] > 0]
-
     fig = go.Figure()
     for sig_type, grp in db.groupby('SignalType'):
         clr = color_map.get(sig_type, BLUE)
@@ -474,8 +451,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                  gridcolor='rgba(255,255,255,0.067)', type='log', showgrid=True),
-      yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.067)'),
+                   gridcolor='rgba(255,255,255,0.067)', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.067)'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -546,9 +523,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                     colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
-
-
+                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -675,7 +650,7 @@ def generate_ai_report(planet_context, star_id):
     Total length: 400-600 words.
     """
     response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
+        model="claude-3-5-sonnet-20241022", max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
     return response.content[0].text
@@ -707,7 +682,7 @@ def analyze_habitability(planet_context):
     Assume solar-type host star unless data suggests otherwise.
     """
     response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
+        model="claude-3-5-sonnet-20241022", max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = response.content[0].text.strip()
@@ -716,16 +691,6 @@ def analyze_habitability(planet_context):
 
 
 # ── PIPELINE ──────────────────────────────────────────────────
-@st.cache_data(show_spinner="Downloading TESS light curve...")
-def _fetch_tess_lightcurve(star_id, sector):
-    """Network-bound MAST search + download, cached per (star_id, sector)."""
-    search = lk.search_lightcurve(star_id, mission="TESS")
-    if sector >= len(search):
-        raise ValueError(f"This star only has {len(search)} available sectors.")
-    lc_col = search[sector].download()
-    return lc_col.normalize().remove_nans().remove_outliers(sigma=5)
-
-
 def run_pipeline(use_csv, csv_df, star_id, sector):
     if use_csv:
         df = csv_df.copy()
@@ -751,7 +716,15 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         star_label = 'Uploaded CSV'
 
     else:
-        lc = _fetch_tess_lightcurve(star_id, sector)
+        search = lk.search_lightcurve(star_id, mission="TESS")
+
+        if sector >= len(search):
+            raise ValueError(
+                f"This star only has {len(search)} available sectors."
+            )
+
+        lc_col = search[sector].download()
+        lc = lc_col.normalize().remove_nans().remove_outliers(sigma=5)
         star_label = star_id
 
         raw_std = float(np.std(lc.flux.value))
@@ -1206,7 +1179,7 @@ with tab_graph:
     else:
         r   = st.session_state.results
         fig = make_plotly(r)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         c1,c2 = st.columns(2)
         with c1:
             st.download_button('⬇️ Interactive HTML',
@@ -1247,7 +1220,7 @@ with tab_db:
         """, unsafe_allow_html=True)
         filt = st.selectbox('Filter',['All']+list(db['SignalType'].unique()))
         show = db if filt=='All' else db[db['SignalType']==filt]
-        st.dataframe(show, use_container_width=True, height=400)
+        st.dataframe(show, width='stretch', height=400)
         st.download_button('⬇️ Download CSV',
                            db.to_csv(index=False).encode(),
                            'results.csv','text/csv')
@@ -1255,10 +1228,7 @@ with tab_db:
         if len(db) >= 2:
             st.markdown("---")
             st.markdown('<h3>Period vs Planet Radius</h3>', unsafe_allow_html=True)
-            try:
-                st.plotly_chart(make_database_chart(db), use_container_width=True)
-            except Exception as e:
-                st.warning(f"Couldn't render chart (likely bad data in results_database.csv): {e}")
+            st.plotly_chart(make_database_chart(db), width='stretch')
     else:
         st.markdown(f'<div class="wait-box">No entries yet. Run a detection first!</div>',
                     unsafe_allow_html=True)
@@ -1391,7 +1361,7 @@ with tab_3d:
             inclination_deg=inc,
             signal_type=r['signal_type']
         )
-        st.plotly_chart(fig3d, use_container_width=True)
+        st.plotly_chart(fig3d, width='stretch')
 
         st.markdown(f"""
         <div class="metric-row">
