@@ -1,4 +1,4 @@
-import sys, os, re
+import sys, os
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -45,16 +45,25 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
-CNN_LOADED = False
-try:
+@st.cache_resource(show_spinner="Loading CNN model...")
+def _load_cnn_model():
+    """Load the CNN model + class names once per session, not on every rerun."""
     import tensorflow as tf
+    model = None
+    class_names = CLASS_NAMES
+    loaded = False
     if os.path.exists(MODEL_PATH):
-        cnn_model = tf.keras.models.load_model(MODEL_PATH)
-        CNN_LOADED = True
+        model = tf.keras.models.load_model(MODEL_PATH)
+        loaded = True
         if os.path.exists(META_PATH):
             meta = pd.read_csv(META_PATH)
             import ast
-            CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
+            class_names = ast.literal_eval(meta['class_names'].iloc[0])
+    return model, loaded, class_names
+
+CNN_LOADED = False
+try:
+    cnn_model, CNN_LOADED, CLASS_NAMES = _load_cnn_model()
 except Exception as e:
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
 # ── Page config ───────────────────────────────────────────────
@@ -265,11 +274,13 @@ def fit_batman_model(flat_time, flat_flux, t0_val, period_val, depth_val):
     ss_res = np.sum((fl - bf) ** 2)
     ss_tot = np.sum((fl - np.mean(fl)) ** 2)
     r2     = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+    r2     = max(-1.0, r2)  # clip runaway negative fits (worse-than-flat-line) to -1.0
 
     fit_params = {
         'rp': round(rp_fit, 5), 'a': round(a_fit, 3), 'inc': round(inc_fit, 3),
         'u1': round(u1_fit, 4), 'u2': round(u2_fit, 4),
         'r_squared': round(r2, 4), 'converged': result.success,
+        'fit_quality': 'poor' if r2 < 0 else ('weak' if r2 < 0.5 else 'good'),
     }
     return pm, bf, fit_params
 
@@ -277,6 +288,7 @@ def fit_batman_model(flat_time, flat_flux, t0_val, period_val, depth_val):
 # ═════════════════════════════════════════════════════════════
 # FEATURE — Star Properties from NASA TIC Catalog
 # ═════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner="Querying TIC catalog...")
 def fetch_star_properties(star_id):
     defaults = {'radius_solar': 1.0, 'temp_k': 5778, 'mass_solar': 1.0,
                 'logg': 4.44, 'found': False}
@@ -451,8 +463,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
+                   gridcolor='#ffffff11', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -523,7 +535,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, 'rgba(255,140,0,1)'], [1, 'rgba(255,140,0,0)']],
+                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -691,6 +703,16 @@ def analyze_habitability(planet_context):
 
 
 # ── PIPELINE ──────────────────────────────────────────────────
+@st.cache_data(show_spinner="Downloading TESS light curve...")
+def _fetch_tess_lightcurve(star_id, sector):
+    """Network-bound MAST search + download, cached per (star_id, sector)."""
+    search = lk.search_lightcurve(star_id, mission="TESS")
+    if sector >= len(search):
+        raise ValueError(f"This star only has {len(search)} available sectors.")
+    lc_col = search[sector].download()
+    return lc_col.normalize().remove_nans().remove_outliers(sigma=5)
+
+
 def run_pipeline(use_csv, csv_df, star_id, sector):
     if use_csv:
         df = csv_df.copy()
@@ -716,59 +738,7 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         star_label = 'Uploaded CSV'
 
     else:
-        # ── Validate TIC ID format BEFORE touching the archive ──────
-        # Only accept things that actually look like a TIC ID (numbers,
-        # optionally prefixed with "TIC"). Anything else is rejected
-        # immediately and honestly — we never fall back to fake/default
-        # data for a malformed ID.
-        clean_id = star_id.strip()
-        if not re.match(r'^(TIC\s*)?\d{3,12}$', clean_id, re.IGNORECASE):
-            raise ValueError(
-                f"'{star_id}' doesn't look like a valid TIC ID. "
-                f"Please enter it as 'TIC 261136679' (numbers only, "
-                f"optionally prefixed with TIC). You can look up real TIC "
-                f"IDs on the NASA Exoplanet Archive or ExoFOP-TESS."
-            )
-
-        try:
-            search = lk.search_lightcurve(clean_id, mission="TESS")
-        except Exception as e:
-            raise ValueError(
-                f"Could not reach the TESS archive to search for '{star_id}'. "
-                f"This is usually a network/archive issue, not a bad ID — "
-                f"please try again. ({e})"
-            )
-
-        if len(search) == 0:
-            raise ValueError(
-                f"No TESS observations were found for '{star_id}'. This TIC ID "
-                f"either doesn't exist or TESS never observed it — it is NOT a "
-                f"valid target, so no data can be shown for it. Please double-check "
-                f"the ID on the NASA Exoplanet Archive or ExoFOP-TESS "
-                f"(https://exofop.ipac.caltech.edu/tess/)."
-            )
-
-        # The requested sector may not exist for this star even though the
-        # star itself is completely real (most TIC IDs only have a handful
-        # of sectors). Rather than erroring out on a genuine star, fall back
-        # to the closest available sector and say so clearly.
-        use_sector = sector if sector < len(search) else len(search) - 1
-        if use_sector != sector:
-            st.info(
-                f"ℹ️ Sector {sector} isn't available for {star_id} "
-                f"({len(search)} sector(s) found total) — using sector "
-                f"{use_sector} instead. This star is real; only the requested "
-                f"sector was unavailable."
-            )
-
-        lc_col = search[use_sector].download()
-        if lc_col is None:
-            raise ValueError(
-                f"TESS listed a light curve for '{star_id}' at sector "
-                f"{use_sector} but the download failed (archive issue). "
-                f"Please try again or pick a different sector."
-            )
-        lc = lc_col.normalize().remove_nans().remove_outliers(sigma=5)
+        lc = _fetch_tess_lightcurve(star_id, sector)
         star_label = star_id
 
         raw_std = float(np.std(lc.flux.value))
@@ -874,12 +844,7 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         conf_lbl=conf_lbl, score=score,
         reasons=reasons, method=method,
         rp_rs=float(pm.rp),
-        # Rp/Rs alone isn't a physical size — it MUST be scaled by the real
-        # host star's radius, or every star is silently treated as Sun-sized
-        # (1.0 R☉), which produces wrong planet radii for almost every real
-        # target. star_props['radius_solar'] comes from the NASA TIC catalog
-        # when available (found=True), or the labeled Solar default otherwise.
-        rp_earth=float(pm.rp) * star_props.get('radius_solar', 1.0) * 109.2,
+        rp_earth=float(pm.rp)*109.2,
         fit_params=fit_params,
         star_props=star_props,
         sec_eclipse=sec_eclipse,
@@ -1189,8 +1154,7 @@ with tab_detect:
                 status.update(label='Done! ✅', state='complete')
             except Exception as e:
                 status.update(label='Error!', state='error')
-                st.session_state.results = None  # never show a stale/old result next to a fresh error
-                st.error(f'❌ {e}')
+                st.error(f'Error: {e}')
         if st.session_state.results:
             show_result_card(st.session_state.results)
 
@@ -1207,8 +1171,7 @@ with tab_detect:
                 status.update(label='Done! ✅', state='complete')
             except Exception as e:
                 status.update(label='Error!', state='error')
-                st.session_state.results = None  # never show a stale/old result next to a fresh error
-                st.error(f'❌ {e}')
+                st.error(f'Error: {e}')
         if st.session_state.results:
             show_result_card(st.session_state.results)
 
@@ -1697,22 +1660,21 @@ with tab_extra:
             </div>
             ''', unsafe_allow_html=True)
 
-            st.markdown(f'''
-            <div class="glass-card" style="border-color:{GREEN if found else YELLOW}44">
-              <div class="input-label">Planet Radius (as shown everywhere in this app)</div>
-              <div style="font-size:2rem;font-weight:800;
-                          color:{GREEN if found else YELLOW};font-family:JetBrains Mono,monospace">
-                {r['rp_earth']:.2f} R⊕
-              </div>
-              <div style="font-size:.8rem;color:{GRAY};margin-top:.3rem">
-                {"Computed using this star's real NASA-catalog radius (" + f"{sp['radius_solar']:.2f} R☉)."
-                 if found else
-                 "⚠️ This star wasn't found in the NASA TIC catalog, so a default "
-                 "1.0 R☉ (Sun-like) radius was assumed — treat this radius as an "
-                 "estimate, not a confirmed measurement."}
-              </div>
-            </div>
-            ''', unsafe_allow_html=True)
+            if sp.get('radius_solar'):
+                rp_real = r['rp_rs'] * sp['radius_solar'] * 109.2
+                st.markdown(f'''
+                <div class="glass-card" style="border-color:{GREEN}44">
+                  <div class="input-label">Corrected Planet Radius</div>
+                  <div style="font-size:2rem;font-weight:800;
+                              color:{GREEN};font-family:JetBrains Mono,monospace">
+                    {rp_real:.2f} R⊕
+                  </div>
+                  <div style="font-size:.8rem;color:{GRAY};margin-top:.3rem">
+                    Using real star radius {sp["radius_solar"]:.2f} R☉
+                    (vs assumed 1.0 R☉ without TIC data)
+                  </div>
+                </div>
+                ''', unsafe_allow_html=True)
 
         # ── SECONDARY ECLIPSE ─────────────────────────────────
         with da2:
