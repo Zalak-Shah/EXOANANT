@@ -443,6 +443,17 @@ def compute_next_transits(t0_bjd, period_days, n=5):
 def make_database_chart(db):
     color_map = {'Planet Transit': GREEN, 'Eclipsing Binary': YELLOW,
                  'Starspot': PINK, 'Noise': GRAY}
+
+    # Sanitize: coerce numerics, drop rows with NaN/inf/non-positive period
+    # (log-scale x-axis) so one malformed database row can't crash the chart.
+    db = db.copy()
+    for col in ('Period_days', 'Rp_Earth', 'SNR'):
+        if col in db.columns:
+            db[col] = pd.to_numeric(db[col], errors='coerce')
+    db = db.replace([np.inf, -np.inf], np.nan)
+    db = db.dropna(subset=['Period_days', 'Rp_Earth', 'SNR', 'SignalType'])
+    db = db[db['Period_days'] > 0]
+
     fig = go.Figure()
     for sig_type, grp in db.groupby('SignalType'):
         clr = color_map.get(sig_type, BLUE)
@@ -1242,7 +1253,10 @@ with tab_db:
         if len(db) >= 2:
             st.markdown("---")
             st.markdown('<h3>Period vs Planet Radius</h3>', unsafe_allow_html=True)
-            st.plotly_chart(make_database_chart(db), use_container_width=True)
+            try:
+                st.plotly_chart(make_database_chart(db), use_container_width=True)
+            except Exception as e:
+                st.warning(f"Couldn't render chart (likely bad data in results_database.csv): {e}")
     else:
         st.markdown(f'<div class="wait-box">No entries yet. Run a detection first!</div>',
                     unsafe_allow_html=True)
