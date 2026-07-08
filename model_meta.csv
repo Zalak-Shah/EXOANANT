@@ -1,0 +1,2 @@
+class_names,test_accuracy,n_points
+"[np.str_('Eclipsing Binary'), np.str_('Noise'), np.str_('Planet Transit'), np.str_('Starspot')]",94.39,201
