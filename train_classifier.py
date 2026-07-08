@@ -32,8 +32,8 @@ print("="*55)
 N_POINTS   = 201      # folded light curve length
 EPOCHS     = 40
 BATCH_SIZE = 32
-MODEL_PATH = 'D:\\isro\\exoplanet_classifier.h5'
-PLOT_PATH  = 'D:\\isro\\training_results.png'
+MODEL_PATH = 'exoplanet_classifier.h5'
+PLOT_PATH  = 'training_results.png'
 
 # ── STEP 1: Download labeled Kepler data ──────────────────────
 print("\nSTEP 1: Downloading Kepler labeled dataset...")
@@ -334,7 +334,7 @@ meta = {
     'test_accuracy': round(acc*100, 2),
     'n_points': N_POINTS
 }
-pd.DataFrame([meta]).to_csv('D:\\isro\\model_meta.csv', index=False)
+pd.DataFrame([meta]).to_csv('model_meta.csv', index=False)
 
 print(f"\n{'='*55}")
 print(f"  TRAINING COMPLETE!")
