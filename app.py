@@ -48,18 +48,43 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
+def _parse_class_names(raw):
+    """Parse the class_names cell from model_meta.csv, tolerating multiple
+    formats: a plain Python list literal, a JSON array, or a numpy repr
+    like array(['A', 'B'], dtype=object)."""
+    import ast, json, re
+    raw = str(raw).strip()
+    try:
+        return ast.literal_eval(raw)
+    except Exception:
+        pass
+    try:
+        return json.loads(raw.replace("'", '"'))
+    except Exception:
+        pass
+    # Fallback: pull out every quoted string, e.g. from a numpy array repr
+    found = re.findall(r"'([^']+)'|\"([^\"]+)\"", raw)
+    names = [a or b for a, b in found]
+    if names:
+        return names
+    raise ValueError(f"could not parse class_names value: {raw!r}")
+
+
 CNN_LOADED = False
 try:
     import tensorflow as tf
     if os.path.exists(MODEL_PATH):
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
         CNN_LOADED = True
-        if os.path.exists(META_PATH):
-            meta = pd.read_csv(META_PATH)
-            import ast
-            CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
 except Exception as e:
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
+
+if CNN_LOADED and os.path.exists(META_PATH):
+    try:
+        meta = pd.read_csv(META_PATH)
+        CLASS_NAMES = _parse_class_names(meta['class_names'].iloc[0])
+    except Exception as e:
+        st.warning(f"CNN class-name metadata unreadable ({e}) — using default class order")
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Exoplanet Detection",
@@ -454,8 +479,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='#ffffff11', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
+                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -526,7 +551,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
+                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
