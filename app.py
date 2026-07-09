@@ -53,8 +53,18 @@ try:
         CNN_LOADED = True
         if os.path.exists(META_PATH):
             meta = pd.read_csv(META_PATH)
-            import ast
-            CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
+            raw_names = meta['class_names'].iloc[0]
+            import ast, re
+            try:
+                CLASS_NAMES = ast.literal_eval(raw_names)
+            except Exception:
+                # Handles strings that aren't pure literals, e.g.
+                # "array(['A', 'B'], dtype=object)" or "['A', 'B']\n" saved by numpy/pandas.
+                match = re.search(r"\[.*\]", str(raw_names), re.S)
+                if match:
+                    CLASS_NAMES = ast.literal_eval(match.group(0))
+                else:
+                    raise
 except Exception as e:
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
 # ── Page config ───────────────────────────────────────────────
@@ -451,8 +461,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='rgba(255,255,255,0.067)', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.067)'),
+                   gridcolor='#ffffff11', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -523,7 +533,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
+                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -605,6 +615,14 @@ def build_planet_context(r):
 
 
 def ai_chatbot_response(user_question, planet_context, chat_history):
+    if not ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY is not set. Add it in Streamlit Cloud under "
+            "'Manage app' → Settings → Secrets as ANTHROPIC_API_KEY = \"sk-ant-...\"."
+        )
+    if not user_question or not user_question.strip():
+        raise ValueError("Empty question sent to ExoAI.")
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     system_prompt = f"""You are ExoAI, an expert astrophysicist and exoplanet scientist
     embedded in an exoplanet detection app. You help users understand their detected
@@ -619,11 +637,27 @@ def ai_chatbot_response(user_question, planet_context, chat_history):
     Current Detection Results:
     {planet_context}
     """
-    messages = chat_history + [{"role": "user", "content": user_question}]
-    response = client.messages.create(
-        model="claude-3-5-sonnet-20241022", max_tokens=1000,
-        system=system_prompt, messages=messages
-    )
+    # Drop any turn with empty/whitespace-only content - the API rejects
+    # empty text content blocks with a 400, and a previously-empty assistant
+    # reply left in chat_history will poison every later call.
+    clean_history = [
+        m for m in chat_history
+        if isinstance(m.get("content"), str) and m["content"].strip()
+    ]
+    messages = clean_history + [{"role": "user", "content": user_question.strip()}]
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=1000,
+            system=system_prompt, messages=messages
+        )
+    except anthropic.APIStatusError as e:
+        # Re-raise with the real body instead of letting Streamlit Cloud's
+        # redacted generic error hide what actually went wrong.
+        raise RuntimeError(f"Anthropic API error {e.status_code}: {e.response.text}") from e
+
+    if not response.content or not response.content[0].text.strip():
+        raise RuntimeError("ExoAI returned an empty response.")
     return response.content[0].text
 
 
@@ -650,7 +684,7 @@ def generate_ai_report(planet_context, star_id):
     Total length: 400-600 words.
     """
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022", max_tokens=1000,
+        model="claude-sonnet-4-6", max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
     return response.content[0].text
@@ -682,7 +716,7 @@ def analyze_habitability(planet_context):
     Assume solar-type host star unless data suggests otherwise.
     """
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022", max_tokens=1000,
+        model="claude-sonnet-4-6", max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = response.content[0].text.strip()
@@ -716,7 +750,29 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         star_label = 'Uploaded CSV'
 
     else:
-        search = lk.search_lightcurve(star_id, mission="TESS")
+        query_id = star_id.strip()
+        # lightkurve/MAST usually wants "TIC <number>", not a bare number
+        if query_id.isdigit():
+            query_id = f"TIC {query_id}"
+
+        try:
+            search = lk.search_lightcurve(query_id, mission="TESS", author="SPOC")
+        except Exception as e:
+            raise ValueError(
+                f"Search for '{star_id}' failed before returning any sectors: "
+                f"{type(e).__name__}: {e}. This is usually a network/MAST "
+                f"connectivity problem (common on Streamlit Cloud sandboxes), "
+                f"not a real 'no data' result."
+            )
+
+        if len(search) == 0:
+            raise ValueError(
+                f"MAST returned 0 SPOC light curves for '{query_id}'. Either this "
+                f"star genuinely has no TESS SPOC data, the ID/format is wrong, "
+                f"or outbound network access to MAST is being blocked in this "
+                f"environment. Try author=None to search all pipelines, or verify "
+                f"connectivity by hitting https://mast.stsci.edu from this server."
+            )
 
         if sector >= len(search):
             raise ValueError(
@@ -1179,7 +1235,7 @@ with tab_graph:
     else:
         r   = st.session_state.results
         fig = make_plotly(r)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
         c1,c2 = st.columns(2)
         with c1:
             st.download_button('⬇️ Interactive HTML',
@@ -1220,7 +1276,7 @@ with tab_db:
         """, unsafe_allow_html=True)
         filt = st.selectbox('Filter',['All']+list(db['SignalType'].unique()))
         show = db if filt=='All' else db[db['SignalType']==filt]
-        st.dataframe(show, width='stretch', height=400)
+        st.dataframe(show, use_container_width=True, height=400)
         st.download_button('⬇️ Download CSV',
                            db.to_csv(index=False).encode(),
                            'results.csv','text/csv')
@@ -1228,7 +1284,7 @@ with tab_db:
         if len(db) >= 2:
             st.markdown("---")
             st.markdown('<h3>Period vs Planet Radius</h3>', unsafe_allow_html=True)
-            st.plotly_chart(make_database_chart(db), width='stretch')
+            st.plotly_chart(make_database_chart(db), use_container_width=True)
     else:
         st.markdown(f'<div class="wait-box">No entries yet. Run a detection first!</div>',
                     unsafe_allow_html=True)
@@ -1361,7 +1417,7 @@ with tab_3d:
             inclination_deg=inc,
             signal_type=r['signal_type']
         )
-        st.plotly_chart(fig3d, width='stretch')
+        st.plotly_chart(fig3d, use_container_width=True)
 
         st.markdown(f"""
         <div class="metric-row">
@@ -1463,11 +1519,14 @@ with tab_ai:
             cols = st.columns(len(suggestions))
             for i, suggestion in enumerate(suggestions):
                 if cols[i].button(suggestion, key=f'sug_{i}'):
-                    with st.spinner('ExoAI is thinking...'):
-                        reply = ai_chatbot_response(suggestion, context, st.session_state.chat_history)
-                    st.session_state.chat_history.append({'role': 'user', 'content': suggestion})
-                    st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
-                    st.rerun()
+                    try:
+                        with st.spinner('ExoAI is thinking...'):
+                            reply = ai_chatbot_response(suggestion, context, st.session_state.chat_history)
+                        st.session_state.chat_history.append({'role': 'user', 'content': suggestion})
+                        st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"ExoAI chat failed: {e}")
 
             user_q = st.text_input('Ask ExoAI anything about this planet...',
                                    key='chat_input',
@@ -1475,11 +1534,14 @@ with tab_ai:
             c1, c2 = st.columns([3, 1])
             with c2:
                 if st.button('Send 🚀', key='send_chat') and user_q:
-                    with st.spinner('ExoAI is thinking...'):
-                        reply = ai_chatbot_response(user_q, context, st.session_state.chat_history)
-                    st.session_state.chat_history.append({'role': 'user', 'content': user_q})
-                    st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
-                    st.rerun()
+                    try:
+                        with st.spinner('ExoAI is thinking...'):
+                            reply = ai_chatbot_response(user_q, context, st.session_state.chat_history)
+                        st.session_state.chat_history.append({'role': 'user', 'content': user_q})
+                        st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"ExoAI chat failed: {e}")
             with c1:
                 if st.button('🗑️ Clear Chat', key='clear_chat'):
                     st.session_state.chat_history = []
