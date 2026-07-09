@@ -45,28 +45,56 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
+def _parse_class_names(raw):
+    """Parse the class-name list stored in model_meta.csv.
+
+    Some training scripts write this as a plain Python list literal
+    (e.g. "['A', 'B']"), but others accidentally write the numpy repr
+    (e.g. "array(['A', 'B'], dtype=object)"). ast.literal_eval only
+    accepts literals, so the numpy form raises
+    "malformed node or string ... <ast.Call object>". Try progressively
+    looser parsers instead of failing outright.
+    """
+    import ast, json, re
+
+    try:
+        return list(ast.literal_eval(raw))
+    except Exception:
+        pass
+
+    try:
+        return list(json.loads(raw.replace("'", '"')))
+    except Exception:
+        pass
+
+    # Last resort: pull out every quoted string, in order.
+    found = re.findall(r"""['"]([^'"]+)['"]""", raw)
+    if found:
+        return found
+
+    raise ValueError(f"could not parse class names from: {raw!r}")
+
+
 CNN_LOADED = False
 try:
     import tensorflow as tf
     if os.path.exists(MODEL_PATH):
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
         CNN_LOADED = True
-        if os.path.exists(META_PATH):
-            meta = pd.read_csv(META_PATH)
-            raw_names = meta['class_names'].iloc[0]
-            import ast, re
-            try:
-                CLASS_NAMES = ast.literal_eval(raw_names)
-            except Exception:
-                # Handles strings that aren't pure literals, e.g.
-                # "array(['A', 'B'], dtype=object)" or "['A', 'B']\n" saved by numpy/pandas.
-                match = re.search(r"\[.*\]", str(raw_names), re.S)
-                if match:
-                    CLASS_NAMES = ast.literal_eval(match.group(0))
-                else:
-                    raise
 except Exception as e:
+    CNN_LOADED = False
+    cnn_model = None
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
+
+if CNN_LOADED and os.path.exists(META_PATH):
+    try:
+        meta = pd.read_csv(META_PATH)
+        CLASS_NAMES = _parse_class_names(meta['class_names'].iloc[0])
+    except Exception as e:
+        # Model itself loaded fine — only the label metadata is bad.
+        # Keep the model active and fall back to the default class
+        # names rather than disabling the CNN over a labeling issue.
+        st.warning(f"Could not parse model_meta.csv class names ({e}) — using default class order")
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Exoplanet Detection",
@@ -461,8 +489,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
+                   gridcolor='#ffffff11', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -533,7 +561,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
+                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -615,14 +643,6 @@ def build_planet_context(r):
 
 
 def ai_chatbot_response(user_question, planet_context, chat_history):
-    if not ANTHROPIC_API_KEY:
-        raise ValueError(
-            "ANTHROPIC_API_KEY is not set. Add it in Streamlit Cloud under "
-            "'Manage app' → Settings → Secrets as ANTHROPIC_API_KEY = \"sk-ant-...\"."
-        )
-    if not user_question or not user_question.strip():
-        raise ValueError("Empty question sent to ExoAI.")
-
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     system_prompt = f"""You are ExoAI, an expert astrophysicist and exoplanet scientist
     embedded in an exoplanet detection app. You help users understand their detected
@@ -637,27 +657,11 @@ def ai_chatbot_response(user_question, planet_context, chat_history):
     Current Detection Results:
     {planet_context}
     """
-    # Drop any turn with empty/whitespace-only content - the API rejects
-    # empty text content blocks with a 400, and a previously-empty assistant
-    # reply left in chat_history will poison every later call.
-    clean_history = [
-        m for m in chat_history
-        if isinstance(m.get("content"), str) and m["content"].strip()
-    ]
-    messages = clean_history + [{"role": "user", "content": user_question.strip()}]
-
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=1000,
-            system=system_prompt, messages=messages
-        )
-    except anthropic.APIStatusError as e:
-        # Re-raise with the real body instead of letting Streamlit Cloud's
-        # redacted generic error hide what actually went wrong.
-        raise RuntimeError(f"Anthropic API error {e.status_code}: {e.response.text}") from e
-
-    if not response.content or not response.content[0].text.strip():
-        raise RuntimeError("ExoAI returned an empty response.")
+    messages = chat_history + [{"role": "user", "content": user_question}]
+    response = client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=1000,
+        system=system_prompt, messages=messages
+    )
     return response.content[0].text
 
 
@@ -750,29 +754,7 @@ def run_pipeline(use_csv, csv_df, star_id, sector):
         star_label = 'Uploaded CSV'
 
     else:
-        query_id = star_id.strip()
-        # lightkurve/MAST usually wants "TIC <number>", not a bare number
-        if query_id.isdigit():
-            query_id = f"TIC {query_id}"
-
-        try:
-            search = lk.search_lightcurve(query_id, mission="TESS", author="SPOC")
-        except Exception as e:
-            raise ValueError(
-                f"Search for '{star_id}' failed before returning any sectors: "
-                f"{type(e).__name__}: {e}. This is usually a network/MAST "
-                f"connectivity problem (common on Streamlit Cloud sandboxes), "
-                f"not a real 'no data' result."
-            )
-
-        if len(search) == 0:
-            raise ValueError(
-                f"MAST returned 0 SPOC light curves for '{query_id}'. Either this "
-                f"star genuinely has no TESS SPOC data, the ID/format is wrong, "
-                f"or outbound network access to MAST is being blocked in this "
-                f"environment. Try author=None to search all pipelines, or verify "
-                f"connectivity by hitting https://mast.stsci.edu from this server."
-            )
+        search = lk.search_lightcurve(star_id, mission="TESS")
 
         if sector >= len(search):
             raise ValueError(
@@ -1519,14 +1501,11 @@ with tab_ai:
             cols = st.columns(len(suggestions))
             for i, suggestion in enumerate(suggestions):
                 if cols[i].button(suggestion, key=f'sug_{i}'):
-                    try:
-                        with st.spinner('ExoAI is thinking...'):
-                            reply = ai_chatbot_response(suggestion, context, st.session_state.chat_history)
-                        st.session_state.chat_history.append({'role': 'user', 'content': suggestion})
-                        st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"ExoAI chat failed: {e}")
+                    with st.spinner('ExoAI is thinking...'):
+                        reply = ai_chatbot_response(suggestion, context, st.session_state.chat_history)
+                    st.session_state.chat_history.append({'role': 'user', 'content': suggestion})
+                    st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
+                    st.rerun()
 
             user_q = st.text_input('Ask ExoAI anything about this planet...',
                                    key='chat_input',
@@ -1534,14 +1513,11 @@ with tab_ai:
             c1, c2 = st.columns([3, 1])
             with c2:
                 if st.button('Send 🚀', key='send_chat') and user_q:
-                    try:
-                        with st.spinner('ExoAI is thinking...'):
-                            reply = ai_chatbot_response(user_q, context, st.session_state.chat_history)
-                        st.session_state.chat_history.append({'role': 'user', 'content': user_q})
-                        st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"ExoAI chat failed: {e}")
+                    with st.spinner('ExoAI is thinking...'):
+                        reply = ai_chatbot_response(user_q, context, st.session_state.chat_history)
+                    st.session_state.chat_history.append({'role': 'user', 'content': user_q})
+                    st.session_state.chat_history.append({'role': 'assistant', 'content': reply})
+                    st.rerun()
             with c1:
                 if st.button('🗑️ Clear Chat', key='clear_chat'):
                     st.session_state.chat_history = []
