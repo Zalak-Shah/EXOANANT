@@ -561,7 +561,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
+                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
