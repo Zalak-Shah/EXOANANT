@@ -7,7 +7,7 @@ batman-package
 scipy
 astropy
 astroquery
-anthropic
+google-generativeai
 tensorflow
 kaleido
 scikit-learn
