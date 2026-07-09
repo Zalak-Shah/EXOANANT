@@ -23,17 +23,20 @@ except Exception:
     ASTROQUERY_OK = False
 
 try:
-    import anthropic
-    ANTHROPIC_SDK_OK = True
+    import google.generativeai as genai
+    GEMINI_SDK_OK = True
 except Exception:
-    ANTHROPIC_SDK_OK = False
+    GEMINI_SDK_OK = False
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-if not ANTHROPIC_API_KEY:
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
     try:
-        ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+        GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
-        ANTHROPIC_API_KEY = ""
+        GEMINI_API_KEY = ""
+
+if GEMINI_SDK_OK and GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ── Try loading real CNN model ─────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,56 +48,18 @@ cnn_model  = None
 CLASS_NAMES = ['Eclipsing Binary', 'Noise', 'Planet Transit', 'Starspot']
 N_POINTS   = 201
 
-def _parse_class_names(raw):
-    """Parse the class-name list stored in model_meta.csv.
-
-    Some training scripts write this as a plain Python list literal
-    (e.g. "['A', 'B']"), but others accidentally write the numpy repr
-    (e.g. "array(['A', 'B'], dtype=object)"). ast.literal_eval only
-    accepts literals, so the numpy form raises
-    "malformed node or string ... <ast.Call object>". Try progressively
-    looser parsers instead of failing outright.
-    """
-    import ast, json, re
-
-    try:
-        return list(ast.literal_eval(raw))
-    except Exception:
-        pass
-
-    try:
-        return list(json.loads(raw.replace("'", '"')))
-    except Exception:
-        pass
-
-    # Last resort: pull out every quoted string, in order.
-    found = re.findall(r"""['"]([^'"]+)['"]""", raw)
-    if found:
-        return found
-
-    raise ValueError(f"could not parse class names from: {raw!r}")
-
-
 CNN_LOADED = False
 try:
     import tensorflow as tf
     if os.path.exists(MODEL_PATH):
         cnn_model = tf.keras.models.load_model(MODEL_PATH)
         CNN_LOADED = True
+        if os.path.exists(META_PATH):
+            meta = pd.read_csv(META_PATH)
+            import ast
+            CLASS_NAMES = ast.literal_eval(meta['class_names'].iloc[0])
 except Exception as e:
-    CNN_LOADED = False
-    cnn_model = None
     st.warning(f"CNN not loaded: {e} — using rule-based fallback")
-
-if CNN_LOADED and os.path.exists(META_PATH):
-    try:
-        meta = pd.read_csv(META_PATH)
-        CLASS_NAMES = _parse_class_names(meta['class_names'].iloc[0])
-    except Exception as e:
-        # Model itself loaded fine — only the label metadata is bad.
-        # Keep the model active and fall back to the default class
-        # names rather than disabling the CNN over a labeling issue.
-        st.warning(f"Could not parse model_meta.csv class names ({e}) — using default class order")
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Exoplanet Detection",
@@ -489,8 +454,8 @@ def make_database_chart(db):
                    font=dict(color='white', size=14), x=0.5),
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis=dict(title='Orbital Period (days)', color=GRAY,
-                   gridcolor='rgba(255,255,255,0.07)', type='log', showgrid=True),
-        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='rgba(255,255,255,0.07)'),
+                   gridcolor='#ffffff11', type='log', showgrid=True),
+        yaxis=dict(title='Planet Radius (R⊕)', color=GRAY, gridcolor='#ffffff11'),
         legend=dict(font=dict(color='white'), bgcolor=PANEL,
                     bordercolor=BLUE, borderwidth=1),
         height=460, margin=dict(l=60, r=20, t=50, b=60), hovermode='closest'
@@ -561,7 +526,7 @@ def make_3d_orbit(period_days, rp_rs, inclination_deg=87.0,
                       showscale=False, opacity=0.95, name='Planet',
                       hovertemplate=f'Planet<br>Rp/Rs: {rp_rs:.4f}<extra></extra>'),
             go.Surface(x=sx*1.3, y=sy*1.3, z=sz*1.3,
-                      colorscale=[[0, '#FF8C00'], [1, 'rgba(255,140,0,0)']],
+                      colorscale=[[0, '#FF8C00'], [1, '#FF8C0000']],
                       showscale=False, opacity=0.08, name='Star Glow', hoverinfo='skip'),
         ],
         frames=frames
@@ -642,8 +607,10 @@ def build_planet_context(r):
     """
 
 
+GEMINI_MODEL = "gemini-2.0-flash"
+
+
 def ai_chatbot_response(user_question, planet_context, chat_history):
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     system_prompt = f"""You are ExoAI, an expert astrophysicist and exoplanet scientist
     embedded in an exoplanet detection app. You help users understand their detected
     exoplanet candidates in simple, exciting, and scientifically accurate terms.
@@ -657,16 +624,19 @@ def ai_chatbot_response(user_question, planet_context, chat_history):
     Current Detection Results:
     {planet_context}
     """
-    messages = chat_history + [{"role": "user", "content": user_question}]
-    response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
-        system=system_prompt, messages=messages
-    )
-    return response.content[0].text
+    model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
+    # Gemini uses role 'model' instead of 'assistant', and 'parts' instead of 'content'
+    gemini_history = [
+        {"role": "model" if m["role"] == "assistant" else "user",
+         "parts": [m["content"]]}
+        for m in chat_history
+    ]
+    chat = model.start_chat(history=gemini_history)
+    response = chat.send_message(user_question)
+    return response.text
 
 
 def generate_ai_report(planet_context, star_id):
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     prompt = f"""You are a professional astrophysicist writing a scientific
     detection report for a peer-reviewed journal. Based on the following
     exoplanet detection data, write a structured report.
@@ -687,15 +657,12 @@ def generate_ai_report(planet_context, star_id):
     Be specific with numbers from the data provided.
     Total length: 400-600 words.
     """
-    response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.content[0].text
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    response = model.generate_content(prompt)
+    return response.text
 
 
 def analyze_habitability(planet_context):
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     prompt = f"""You are an astrobiologist analyzing an exoplanet candidate for habitability.
 
     {planet_context}
@@ -719,11 +686,12 @@ def analyze_habitability(planet_context):
     Base score on: orbital period (habitable zone), planet size, transit depth, SNR quality.
     Assume solar-type host star unless data suggests otherwise.
     """
-    response = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
+    model = genai.GenerativeModel(
+        GEMINI_MODEL,
+        generation_config={"response_mime_type": "application/json"},
     )
-    raw = response.content[0].text.strip()
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
     return json.loads(raw)
 
@@ -1443,10 +1411,10 @@ with tab_ai:
           No results yet — run a detection first in the 🔭 Detect tab!
         </div>
         """, unsafe_allow_html=True)
-    elif not ANTHROPIC_SDK_OK:
-        st.error("⚠️ The `anthropic` package isn't installed. Run `pip install anthropic` to enable this tab.")
-    elif not ANTHROPIC_API_KEY:
-        st.error("⚠️ No Anthropic API key found. Add ANTHROPIC_API_KEY to your environment or st.secrets.")
+    elif not GEMINI_SDK_OK:
+        st.error("⚠️ The `google-generativeai` package isn't installed. Run `pip install google-generativeai` to enable this tab.")
+    elif not GEMINI_API_KEY:
+        st.error("⚠️ No Gemini API key found. Add GEMINI_API_KEY to your environment or st.secrets.")
     else:
         r = st.session_state.results
         context = build_planet_context(r)
